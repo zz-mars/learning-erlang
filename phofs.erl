@@ -1,0 +1,61 @@
+-module(phofs).
+-export([mapreduce/4]).
+
+-import(lists,[foreach/2]).
+
+%% F1(Pid,X) -> send {Key,Val} msg to Pid
+%% F2(Key,[Val],AccIn) -> AccOut
+
+%% mapreduce 
+mapreduce(F1,F2,Acc0,L) ->
+	S = self(),
+	Pid = spawn(fun() -> reduce(S,F1,F2,Acc0,L) end),
+
+	receive
+		{Pid,Res} -> 
+			Res
+	end.
+
+%% spawn a process for each item in L
+%% collect the results after all the mapping processes are done
+%% send the result to parent
+reduce(Parent,F1,F2,Acc0,L) ->
+	process_flag(trap_exit,true),
+	ReducePid = self(),
+	foreach(fun(X) ->
+					spawn_link(fun() -> do_job(ReducePid,F1,X) end)
+					end,L),
+
+	N = length(L),
+	%% make a dict to collect results from mapping processes
+	Dict0 = dict:new(),
+	%% collect
+	Dict1 = collect_replies(N,Dict0),
+	Acc = dict:fold(F2,Acc0,Dict1),
+	%% send res to parent
+	Parent ! {self(),Acc}.
+
+
+collect_replies(0,Dict) ->
+	Dict;
+collect_replies(N,Dict) ->
+	receive
+		{Key,Val} ->
+			case dict:is_key(Key,Dict) of
+				true ->
+					Dict1 = dict:append(Key,Val,Dict),
+					collect_replies(N,Dict1);
+				false ->
+					Dict1 = dict:store(Key,[Val],Dict),
+					collect_replies(N,Dict1)
+			end;
+		{'EXIT',_,Why} ->
+			collect_replies(N-1,Dict)
+	end.
+
+do_job(ReducePid,F1,X) ->
+	F1(ReducePid,X).
+
+%%do_job(ReducePid,F1,X) ->
+%%	F1(X,[]).
+
